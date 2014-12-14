@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf8 -*-
 """
-password_cracker
-~~~~~~~~~~~~~~~~
+cracker
+~~~~~~~
 
+OpenCL password sha256 hash cracker.
+
+:author: See AUTHORS
 """
 
 from setuptools import setup
@@ -19,6 +22,15 @@ setup(
     keywords='Password Hash Cracker',
     long_description=__doc__,
     license='BSD',
+    install_requires=[
+        'Click',
+        'numpy',
+        'pyopencl'
+    ],
+    entry_points='''
+        [console_scripts]
+        passcracker=cracker:cli
+    ''',
     classifiers=[
         'Development Status :: 2 - Pre-Alpha',
         'Intended Audience :: Developers',
