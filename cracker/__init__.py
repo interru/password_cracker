@@ -6,7 +6,9 @@ import pyopencl as cl
 
 
 PROCESS_CODE = """
-#define rot(x, y) rotate(x, (uint)y)
+#define rot(x, y) rotate(x, (uint)(32 - y))
+#define Ch(x, y, z) bitselect(z, y, x)
+#define Ma(x, y, z) Ch((z ^ x), y, x)
 
 __constant uint K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
@@ -22,8 +24,8 @@ __constant uint K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 __constant uint H[8] = {
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-    0xfc08884d, 0xec9fcd13
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
+    0x1f83d9ab, 0x5be0cd19
 };
 
 __kernel void process(
@@ -39,9 +41,9 @@ __kernel void process(
     if (i < 16) {
       w[i] = wordarray[gid*16+i];
     } else {
-      s0 = rot(w[i-15], 7) ^ rot(w[i-15], 18) ^ (w[i-15] >> 3);
-      s1 = rot(w[i-2], 17) ^ rot(w[i-2], 19) ^ (w[i-2] >> 10);
-      w[i] = (w[i-16] + s0 + w[i-7] + s1);
+      s0 = rot(w[i-15], 7) ^ rot(w[i-15], 18) ^ (w[i-15] >> 3U);
+      s1 = rot(w[i-2], 17) ^ rot(w[i-2], 19) ^ (w[i-2] >> 10U);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) & 0xffffffff;
     }
   }
 
@@ -57,8 +59,8 @@ __kernel void process(
   for (int i = 0; i < 64; i++) {
     S0 = rot(a, 2) ^ rot(a, 13) ^ rot(a, 22);
     S1 = rot(e, 6) ^ rot(e, 11) ^ rot(e, 25);
-    maj = (a & b) ^ (a & c) ^ (b & c);
-    ch = (e & f) ^ ((~e) & g);
+    maj = Ma(a, b, c);
+    ch = Ch(e, f, g);
 
     temp1 = h + S1 + ch + K[i] + w[i];
     temp2 = S0 + maj;
@@ -89,12 +91,10 @@ queue = cl.CommandQueue(ctx)
 mf = cl.mem_flags
 
 wordarray = np.array([
-    [123, 123, 123, 123, 123, 123, 123, 123,
-     123, 123, 123, 123, 123, 123, 123, 123],
-    [122, 122, 122, 122, 122, 122, 122, 122,
-     123, 123, 123, 123, 123, 123, 123, 123]
+    [1952805748, -2147483648, 0, 0, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 0, 32]
 ]).astype(np.uint32)
-results = np.empty((2,8), dtype=np.uint32) # Zwei hashes
+results = np.empty((1,8), dtype=np.uint32) # Zwei hashes
 
 hash_buffer = cl.Buffer(ctx,
     mf.READ_ONLY | mf.COPY_HOST_PTR,
@@ -102,7 +102,7 @@ hash_buffer = cl.Buffer(ctx,
 result_buffer = cl.Buffer(ctx, mf.WRITE_ONLY, results.nbytes)
 
 prg = cl.Program(ctx, PROCESS_CODE).build()
-prg.process(queue, (2,), None, hash_buffer, result_buffer)
+prg.process(queue, (1,), None, hash_buffer, result_buffer)
 
 cl.enqueue_read_buffer(queue, result_buffer, results).wait()
 
