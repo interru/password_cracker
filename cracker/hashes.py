@@ -91,11 +91,24 @@ with warnings.catch_warnings():
     # Disable warnings because it warns every time the compiler returns
     # something, which is literally always the case.
     warnings.simplefilter("ignore")
+    ctx = cl.create_some_context()
     prg = cl.Program(ctx, PROCESS_CODE).build()
 
 
+def encode_wordarray(string):
+    wordarray = []
+    bytestring = string.encode('utf8')
+    for index, byte in enumerate(bytestring):
+        byte = ord(byte)
+        pos = index // 4
+        if not index % 4:
+            wordarray.append(byte << 24)
+        else:
+            wordarray[pos] += byte << (8 * (3 - (index % 4)))
+    return wordarray
+
+
 def generate_hashes(passhash, wordarray, callback):
-    ctx = cl.create_some_context()
     queue = cl.CommandQueue(ctx)
     mf = cl.mem_flags
 
