@@ -30,10 +30,10 @@ __kernel void process(
     __global const int *wordarray,
     __global uint *result
   ) {
-  uint gid = get_global_id(0);
+  int gid = get_global_id(0);
   uint s0, s1, a, b, c, d, e, f, g, h;
   uint ch, temp1, temp2, S0, S1, maj;
-  uint w[16];
+  uint w[64];
 
   for (int i = 0; i < 64; i++) {
     if (i < 16) {
