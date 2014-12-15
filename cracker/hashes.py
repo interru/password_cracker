@@ -1,7 +1,8 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+# coding: utf-8
 
 import warnings
+from cStringIO import StringIO
+
 import numpy as np
 import pyopencl as cl
 
@@ -76,50 +77,91 @@ __kernel void process(
     a = temp1 + temp2;
   }
 
-  result[gid*8+0] = a;
-  result[gid*8+1] = b;
-  result[gid*8+2] = c;
-  result[gid*8+3] = d;
-  result[gid*8+4] = e;
-  result[gid*8+5] = f;
-  result[gid*8+6] = g;
-  result[gid*8+7] = h;
+  result[gid*8+0] = H[0] + a;
+  result[gid*8+1] = H[1] + b;
+  result[gid*8+2] = H[2] + c;
+  result[gid*8+3] = H[3] + d;
+  result[gid*8+4] = H[4] + e;
+  result[gid*8+5] = H[5] + f;
+  result[gid*8+6] = H[6] + g;
+  result[gid*8+7] = H[7] + h;
 }
 """
 
-with warnings.catch_warnings():
-    # Disable warnings because it warns every time the compiler returns
-    # something, which is literally always the case.
-    warnings.simplefilter("ignore")
-    ctx = cl.create_some_context()
-    prg = cl.Program(ctx, PROCESS_CODE).build()
 
+class HashCracker(object):
 
-def encode_wordarray(string):
-    wordarray = []
-    bytestring = string.encode('utf8')
-    for index, byte in enumerate(bytestring):
-        byte = ord(byte)
-        pos = index // 4
-        if not index % 4:
-            wordarray.append(byte << 24)
-        else:
-            wordarray[pos] += byte << (8 * (3 - (index % 4)))
-    return wordarray
+    def __init__(self, passhash, wordlist=None):
+        self.passhash = passhash
+        self.wordlist = wordlist or []
+        self.ctx = cl.create_some_context()
+        self.queue = cl.CommandQueue(self.ctx)
 
+        # Disable warnings because it warns every time the compiler
+        # returns something, which is literally always the case.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.prg = cl.Program(self.ctx, PROCESS_CODE).build()
 
-def generate_hashes(passhash, wordarray, callback):
-    queue = cl.CommandQueue(ctx)
-    mf = cl.mem_flags
+    def _encode_wordarray(self, bytestring):
+        wordarray = []
+        for index, byte in enumerate(bytestring):
+            byte = ord(byte)
+            pos = index // 4
+            if not index % 4:
+                wordarray.append(byte << 24)
+            else:
+                wordarray[pos] += byte << (8 * (3 - (index % 4)))
+        return wordarray
 
-    wordarray = np.array(wordarray).astype(np.uint32)
-    results = np.empty((len(wordarray),8), dtype=np.uint32)
+    def _hexdigest(self, wordarray):
+        result = StringIO()
+        for word in wordarray:
+            result.write(hex(word)[2:].replace('L', ''))
+        return result.getvalue()
 
-    hash_buffer = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR,
-                            hostbuf=wordarray)
-    result_buffer = cl.Buffer(ctx, mf.WRITE_ONLY, results.nbytes)
+    def _prepare_password(self, password):
+        password = password.encode('utf8')
+        password += chr(0x80)
 
-    prg.process(queue, (1,), None, hash_buffer, result_buffer)
-    cl.enqueue_read_buffer(queue, result_buffer, results).wait()
+        wordarray = self._encode_wordarray(password)
+        if len(wordarray) > 15:
+            return None  # Password too long warn user
 
-    return results
+        for i in xrange(len(wordarray), 16):
+            wordarray.append(0)
+        wordarray[15] |= (len(password) - 1) << 3
+
+        return wordarray
+
+    def _generate_hashes(self, wordarrays):
+        mf = cl.mem_flags
+
+        wordarray = np.array(wordarrays).astype(np.uint32)
+        results = np.empty((len(wordarray),8), dtype=np.uint32)
+
+        hash_buffer = cl.Buffer(self.ctx, mf.READ_ONLY | mf.COPY_HOST_PTR,
+                                hostbuf=wordarray)
+        result_buffer = cl.Buffer(self.ctx, mf.WRITE_ONLY, results.nbytes)
+
+        self.prg.process(self.queue, (len(wordarray),), None, hash_buffer,
+                         result_buffer)
+        cl.enqueue_read_buffer(self.queue, result_buffer, results).wait()
+        return results
+
+    def start(self):
+        wordarrays = [self._prepare_password(word) for word in self.wordlist]
+        if None in wordarrays:
+            warnings.warn('Some words are too long so we omit them')
+            wordarrays = filter(wordarrays, lambda x: x)
+
+        hashes = self._generate_hashes(wordarrays)
+        hashes = [self._hexdigest(hash) for hash in hashes]
+
+        if self.passhash in hashes:
+            index = hashes.index(self.passhash)
+            print "Geeeeefunden: %s" % self.wordlist[index]
+
+    def __repr__(self):
+        return "<HashCracker(%s)>" % self.passhash
+
