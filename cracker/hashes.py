@@ -139,7 +139,7 @@ class HashCracker(object):
         items = []
         for index, item in enumerate(seq):
             if len(item) < 56:
-                items.append(item)
+                items.append(item.rstrip('\n\r'))
             if not ((index + 1) % items_in_chunk) and items:
                 yield items
                 items = []
