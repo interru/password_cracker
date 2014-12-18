@@ -1,8 +1,12 @@
 # coding: utf-8
 
-import warnings
-from cStringIO import StringIO
+from gevent import monkey; monkey.patch_all()
+import gevent
+from gevent.pool import Pool
 
+from time import sleep
+
+import warnings
 import numpy as np
 import pyopencl as cl
 
@@ -31,22 +35,29 @@ __constant uint H[8] = {
 };
 
 __kernel void process(
-    __global const int *wordarray,
+    __global char *input,
+    __global const uint *size,
     __global uint *result
   ) {
-  int gid = get_global_id(0);
+  int gid = get_global_id(0), length = size[gid];
   uint s0, s1, a, b, c, d, e, f, g, h;
-  uint ch, temp1, temp2, S0, S1, maj;
+  uint ch, temp1, temp2, S0, S1, maj, inc;
   uint w[64];
 
+  #pragma unroll 64
   for (int i = 0; i < 64; i++) {
-    if (i < 16) {
-      w[i] = wordarray[gid*16+i];
-    } else {
-      s0 = rot(w[i-15], 7) ^ rot(w[i-15], 18) ^ (w[i-15] >> 3U);
-      s1 = rot(w[i-2], 17) ^ rot(w[i-2], 19) ^ (w[i-2] >> 10U);
-      w[i] = (w[i-16] + s0 + w[i-7] + s1) & 0xffffffff;
-    }
+    w[i] = 0;
+    inc = clamp((length - i), 0, 1);
+    w[(int)(i / 4)] |= (input[gid*64+i] * inc) << (8 * (3 - (i % 4)));
+  }
+  w[(int)(length / 4)] |= 0x80 << (8 * (3 - (length % 4)));
+  w[15] |= length << 3;
+
+  #pragma unroll 48
+  for (int i = 16; i < 64; i++) {
+    s0 = rot(w[i-15], 7) ^ rot(w[i-15], 18) ^ (w[i-15] >> 3U);
+    s1 = rot(w[i-2], 17) ^ rot(w[i-2], 19) ^ (w[i-2] >> 10U);
+    w[i] = (w[i-16] + s0 + w[i-7] + s1) & 0xffffffff;
   }
 
   a = H[0];
@@ -58,23 +69,24 @@ __kernel void process(
   g = H[6];
   h = H[7];
 
+  #pragma unroll 64
   for (int i = 0; i < 64; i++) {
     S0 = rot(a, 2) ^ rot(a, 13) ^ rot(a, 22);
     S1 = rot(e, 6) ^ rot(e, 11) ^ rot(e, 25);
     maj = Ma(a, b, c);
     ch = Ch(e, f, g);
 
-    temp1 = h + S1 + ch + K[i] + w[i];
+    temp1 = ((h + S1 + ch + K[i] + w[i]) & 0xffffffff);
     temp2 = S0 + maj;
 
     h = g;
     g = f;
     f = e;
-    e = d + temp1;
+    e = ((d + temp1) & 0xffffffff);
     d = c;
     c = b;
     b = a;
-    a = temp1 + temp2;
+    a = ((temp1 + temp2) & 0xffffffff);
   }
 
   result[gid*8+0] = H[0] + a;
@@ -92,10 +104,15 @@ __kernel void process(
 class HashCracker(object):
 
     def __init__(self, passhash, wordlist=None):
-        self.passhash = passhash
+        self.hashdigest = passhash
+        self.passhash = np.fromstring(passhash.decode('hex'),
+                                      dtype=np.uint32).byteswap()
         self.wordlist = wordlist or []
         self.ctx = cl.create_some_context()
         self.queue = cl.CommandQueue(self.ctx)
+        self.has_warned = False
+        self.pool = Pool(10)
+        self.stopped = False
 
         # Disable warnings because it warns every time the compiler
         # returns something, which is literally always the case.
@@ -103,64 +120,56 @@ class HashCracker(object):
             warnings.simplefilter("ignore")
             self.prg = cl.Program(self.ctx, PROCESS_CODE).build()
 
-    def _encode_wordarray(self, bytestring):
-        wordarray = []
-        for index, byte in enumerate(bytestring):
-            byte = ord(byte)
-            pos = index // 4
-            if not index % 4:
-                wordarray.append(byte << 24)
-            else:
-                wordarray[pos] += byte << (8 * (3 - (index % 4)))
-        return wordarray
 
-    def _hexdigest(self, wordarray):
-        result = StringIO()
-        for word in wordarray:
-            result.write(hex(word)[2:].replace('L', ''))
-        return result.getvalue()
-
-    def _prepare_password(self, password):
-        password = password.encode('utf8')
-        password += chr(0x80)
-
-        wordarray = self._encode_wordarray(password)
-        if len(wordarray) > 15:
-            return None  # Password too long warn user
-
-        for i in xrange(len(wordarray), 16):
-            wordarray.append(0)
-        wordarray[15] |= (len(password) - 1) << 3
-
-        return wordarray
-
-    def _generate_hashes(self, wordarrays):
+    def _generate_hashes(self, wordlist):
         mf = cl.mem_flags
 
-        wordarray = np.array(wordarrays).astype(np.uint32)
-        results = np.empty((len(wordarray),8), dtype=np.uint32)
+        wordlist = np.array(wordlist)
+        sizelist = np.array([len(word) for word in wordlist]).astype(np.uint32)
+        results = np.empty((len(wordlist),8), dtype=np.uint32)
 
-        hash_buffer = cl.Buffer(self.ctx, mf.READ_ONLY | mf.COPY_HOST_PTR,
-                                hostbuf=wordarray)
+        word_buffer = cl.Buffer(self.ctx, mf.READ_ONLY | mf.COPY_HOST_PTR,
+                                hostbuf=wordlist)
+        size_buffer = cl.Buffer(self.ctx, mf.READ_ONLY | mf.COPY_HOST_PTR,
+                                hostbuf=sizelist)
         result_buffer = cl.Buffer(self.ctx, mf.WRITE_ONLY, results.nbytes)
 
-        self.prg.process(self.queue, (len(wordarray),), None, hash_buffer,
-                         result_buffer)
-        cl.enqueue_read_buffer(self.queue, result_buffer, results).wait()
+        self.prg.process(self.queue, (len(wordlist),), None, word_buffer,
+                         size_buffer, result_buffer)
+        cl.enqueue_read_buffer(self.queue, result_buffer, results)
+        gevent.sleep()
+
         return results
 
-    def start(self):
-        wordarrays = [self._prepare_password(word) for word in self.wordlist]
-        if None in wordarrays:
-            warnings.warn('Some words are too long so we omit them')
-            wordarrays = filter(wordarrays, lambda x: x)
+    def _read_chunks(self, seq, items_in_chunk):
+        items = []
+        for index, item in enumerate(seq):
+            if len(item) < 56:
+                items.append(item)
+            if not ((index + 1) % items_in_chunk) and items:
+                yield items
+                items = []
+        yield items
 
-        hashes = self._generate_hashes(wordarrays)
-        hashes = [self._hexdigest(hash) for hash in hashes]
+    def _found(self, word, hash):
+        print "Hash: %s | Word: %s" % (hash, word)
+
+    def compute(self, wordlist, index):
+        hashes = self._generate_hashes(wordlist)
+        print index * 5000
 
         if self.passhash in hashes:
-            index = hashes.index(self.passhash)
-            print "Geeeeefunden: %s" % self.wordlist[index]
+            hashes = [hash.byteswap().tobytes().encode('hex')
+                      for hash in hashes]
+            index = hashes.index(self.hashdigest)
+            self._found(wordlist[index], self.hashdigest)
+
+    def start(self):
+        for index, chunk in enumerate(self._read_chunks(self.wordlist, 5000)):
+            if not self.stopped:
+                self.pool.spawn(self.compute, chunk, index)
+        self.pool.join()
+
 
     def __repr__(self):
         return "<HashCracker(%s)>" % self.passhash
