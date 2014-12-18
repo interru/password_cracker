@@ -1,10 +1,5 @@
 # coding: utf-8
 
-from gevent import monkey; monkey.patch_all()
-import gevent
-from gevent.pool import Pool
-
-from time import sleep
 import warnings
 
 import click
