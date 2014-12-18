@@ -24,12 +24,16 @@ def pass_generator():
               help='Use permuations of alphanumerics to guess hashes')
 @click.argument('hash')
 def crack(wordlist, permutate, hash):
+    cracker = None
     if permutate:
         cracker = HashCracker(hash, pass_generator())
         click.echo(repr(hash))
     elif wordlist:
         cracker = HashCracker(hash, wordlist)
-    cracker.start()
+    if cracker:
+        cracker.start()
+    else:
+        print "--permutate oder --wordlist hinzufügen"
 
 
 if __name__ == '__main__':

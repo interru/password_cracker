@@ -107,7 +107,6 @@ class HashCracker(object):
         self.ctx = cl.create_some_context()
         self.queue = cl.CommandQueue(self.ctx)
         self.has_warned = False
-        self.pool = Pool(10)
         self.stopped = False
 
         # Disable warnings because it warns every time the compiler
