@@ -5,8 +5,9 @@ import gevent
 from gevent.pool import Pool
 
 from time import sleep
-
 import warnings
+
+import click
 import numpy as np
 import pyopencl as cl
 
@@ -48,7 +49,7 @@ __kernel void process(
   for (int i = 0; i < 64; i++) {
     w[i] = 0;
     inc = clamp((length - i), 0, 1);
-    w[(int)(i / 4)] |= (input[gid*64+i] * inc) << (8 * (3 - (i % 4)));
+    w[(int)(i / 4)] |= (input[gid*length+i] * inc) << (8 * (3 - (i % 4)));
   }
   w[(int)(length / 4)] |= 0x80 << (8 * (3 - (length % 4)));
   w[15] |= length << 3;
@@ -134,10 +135,9 @@ class HashCracker(object):
                                 hostbuf=sizelist)
         result_buffer = cl.Buffer(self.ctx, mf.WRITE_ONLY, results.nbytes)
 
-        self.prg.process(self.queue, (len(wordlist),), None, word_buffer,
+        self.prg.process(self.queue, wordlist.shape, None, word_buffer,
                          size_buffer, result_buffer)
-        cl.enqueue_read_buffer(self.queue, result_buffer, results)
-        gevent.sleep()
+        cl.enqueue_read_buffer(self.queue, result_buffer, results).wait()
 
         return results
 
@@ -152,11 +152,12 @@ class HashCracker(object):
         yield items
 
     def _found(self, word, hash):
-        print "Hash: %s | Word: %s" % (hash, word)
+        self.stopped = True
+        click.echo("Hash: %s | Word: %s" % (hash, word))
 
     def compute(self, wordlist, index):
         hashes = self._generate_hashes(wordlist)
-        print index * 5000
+        click.echo('Current Word: %s' % wordlist[-1])
 
         if self.passhash in hashes:
             hashes = [hash.byteswap().tobytes().encode('hex')
@@ -167,8 +168,11 @@ class HashCracker(object):
     def start(self):
         for index, chunk in enumerate(self._read_chunks(self.wordlist, 5000)):
             if not self.stopped:
-                self.pool.spawn(self.compute, chunk, index)
-        self.pool.join()
+                #self.pool.spawn(self.compute, chunk, index)
+                self.compute(chunk, index)
+            else:
+                break
+        #self.pool.join()
 
 
     def __repr__(self):

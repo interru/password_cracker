@@ -25,11 +25,12 @@ setup(
     install_requires=[
         'Click',
         'numpy',
-        'pyopencl'
+        'pyopencl',
+        'gevent'
     ],
     entry_points='''
         [console_scripts]
-        passcracker=cracker:cli
+        passcracker=cracker.cli:crack
     ''',
     classifiers=[
         'Development Status :: 2 - Pre-Alpha',
@@ -37,7 +38,6 @@ setup(
         'License :: OSI Approved :: BSD License',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
-        'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 2.7'
     ]
 )

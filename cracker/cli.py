@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import string
-from itertools import combinations_with_replacement, count, chain
+from itertools import product, count, chain
 
 import click
 from hashes import HashCracker
@@ -11,9 +11,10 @@ from hashes import HashCracker
 def pass_generator():
     alphabet = string.letters + string.digits
     def _int():
-        for i in count():
-            yield combinations_with_replacement(alphabet, i)
-    return chain.from_iterable(_int())
+        for i in count(1):
+            for item in product(alphabet, repeat=i):
+                yield ''.join(item)
+    return _int()
 
 
 @click.command()
@@ -25,6 +26,7 @@ def pass_generator():
 def crack(wordlist, permutate, hash):
     if permutate:
         cracker = HashCracker(hash, pass_generator())
+        click.echo(repr(hash))
     elif wordlist:
         cracker = HashCracker(hash, wordlist)
     cracker.start()

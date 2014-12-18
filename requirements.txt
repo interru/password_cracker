@@ -1,5 +1,8 @@
 appdirs==1.4.0
+click==3.3
 decorator==3.4.0
+gevent==1.0.1
+greenlet==0.4.5
 numpy==1.9.1
 py==1.4.26
 pyopencl==2014.1
